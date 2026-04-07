@@ -1,0 +1,232 @@
+import "std/string" {pushChar, stringLen as len, slice};
+
+pub enum JsonType {
+    STRING,
+    NUMBER,
+    BOOL,
+    NULLTYPE,
+    OBJECT
+}
+
+pub class JsonObject {
+    pub keys: [64]String;
+    pub values: [64]JsonValue;
+    pub len: Int;
+
+    fun init() {
+        self.len = 0;
+    }
+}
+
+pub struct JsonValue {
+    type: JsonType,
+    stringVal: String,
+    numberVal: Float64,
+    boolVal: Bool,
+    objectSource: String
+}
+
+pub class JsonParser {
+    pub str: String;
+    pub pos: Int;
+
+    pub fun init(text: String) {
+        self.str = text;
+        self.pos = 0;
+    }
+
+    pub fun isAtEnd() Bool {
+        return self.pos >= len(self.str);
+    }
+
+    pub fun peek() Char {
+        if self.isAtEnd() {
+            return ' ';
+        }
+        return self.str[self.pos];
+    }
+
+    pub fun consume() Char {
+        var temp: Char = self.peek();
+        self.pos = self.pos + 1;
+        return temp;
+    }
+
+    pub fun skipWhitespace() {
+        while !self.isAtEnd() {
+            var c: Char = self.peek();
+            if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+                self.pos = self.pos + 1;
+            } else {
+                return;
+            }
+        }
+    }
+
+    pub fun parseString() String {
+        var result: String = "";
+        self.consume();
+
+        while !self.isAtEnd() && self.peek() != '"' {
+            result = pushChar(result, self.consume());
+        }
+
+        if !self.isAtEnd() && self.peek() == '"' {
+            self.consume();
+        }
+
+        return result;
+    }
+
+    pub fun parseIdentifier() String {
+        var result: String = "";
+
+        while !self.isAtEnd() {
+            var c: Char = self.peek();
+            if c == ':' || c == ',' || c == '}' || c == '{' || c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+                return result;
+            }
+            result = pushChar(result, self.consume());
+        }
+
+        return result;
+    }
+
+    pub fun parseKey() String {
+        self.skipWhitespace();
+        if self.peek() == '"' {
+            return self.parseString();
+        }
+        return self.parseIdentifier();
+    }
+
+    pub fun makeNull() JsonValue {
+        return JsonValue{
+            type: JsonType.NULLTYPE,
+            stringVal: "",
+            numberVal: 0.0,
+            boolVal: false,
+            objectSource: ""
+        };
+    }
+
+    pub fun makeString(value: String) JsonValue {
+        return JsonValue{
+            type: JsonType.STRING,
+            stringVal: value,
+            numberVal: 0.0,
+            boolVal: false,
+            objectSource: ""
+        };
+    }
+
+    pub fun makeObject(source: String) JsonValue {
+        return JsonValue{
+            type: JsonType.OBJECT,
+            stringVal: "",
+            numberVal: 0.0,
+            boolVal: false,
+            objectSource: source
+        };
+    }
+
+    pub fun parseValue() JsonValue {
+        self.skipWhitespace();
+
+        if self.isAtEnd() {
+            return self.makeNull();
+        }
+
+        if self.peek() == '{' {
+            return self.parseObject();
+        }
+
+        if self.peek() == '"' {
+            return self.makeString(self.parseString());
+        }
+
+        return self.makeString(self.parseIdentifier());
+    }
+
+    pub fun parseObjectFields() JsonObject {
+        var object: JsonObject = new JsonObject();
+        self.skipWhitespace();
+
+        if self.peek() != '{' {
+            return object;
+        }
+
+        self.consume();
+        self.skipWhitespace();
+
+        if !self.isAtEnd() && self.peek() == '}' {
+            self.consume();
+            return object;
+        }
+
+        while !self.isAtEnd() {
+            var key: String = self.parseKey();
+
+            self.skipWhitespace();
+            if self.isAtEnd() || self.peek() != ':' {
+                object.len = 0;
+                return object;
+            }
+            self.consume();
+
+            self.skipWhitespace();
+            if object.len >= 64 {
+                object.len = 0;
+                return object;
+            }
+            object.keys[object.len] = key;
+            object.values[object.len] = self.parseValue();
+            object.len = object.len + 1;
+
+            self.skipWhitespace();
+            if self.isAtEnd() {
+                object.len = 0;
+                return object;
+            }
+
+            if self.peek() == ',' {
+                self.consume();
+                self.skipWhitespace();
+            } else if self.peek() == '}' {
+                self.consume();
+                return object;
+            } else {
+                object.len = 0;
+                return object;
+            }
+        }
+
+        object.len = 0;
+        return object;
+    }
+
+    pub fun parseObject() JsonValue {
+        var start: Int = self.pos;
+        var object: JsonObject = self.parseObjectFields();
+
+        if self.pos <= start || object.len == 0 && (start >= len(self.str) || self.str[start] != '{') {
+            return self.makeNull();
+        }
+
+        return self.makeObject(slice(self.str, start, self.pos - start));
+    }
+
+    pub fun parse() JsonValue {
+        self.skipWhitespace();
+
+        if self.peek() == '{' {
+            return self.parseObject();
+        }
+
+        return self.parseValue();
+    }
+
+    pub fun isDigit(c: Char) Bool {
+        return (c >= '0') && (c <= '9');
+    }
+}

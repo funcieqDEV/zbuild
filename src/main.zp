@@ -1,0 +1,231 @@
+import "std/io";
+import "std/process";
+import "std/fs";
+import "std/path";
+import "std/string" {eq, stringLen as len, at};
+import "util/json.zp" as json;
+
+fun usage(argv0: String) {
+    io.eprintln("usage: " ~ argv0 ~ " build [-o NAME]");
+    io.eprintln("       " ~ argv0 ~ " run [-o NAME]");
+    io.eprintln("       " ~ argv0 ~ " new <project-name>");
+}
+
+fun endsWithSlash(value: String) Bool {
+    if len(value) == 0 {
+        return false;
+    }
+    return at(value, len(value) - 1) == '/';
+}
+
+fun shellQuote(value: String) String {
+    return "\"" ~ value ~ "\"";
+}
+
+fun hasSlash(value: String) Bool {
+    var i: Int = 0;
+    while i < len(value) {
+        if at(value, i) == '/' {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fun parseRootObject(source: String) json.JsonObject {
+    var parser: json.JsonParser = new json.JsonParser(source);
+    return parser.parseObjectFields();
+}
+
+fun getField(obj: json.JsonObject, key: String) json.JsonValue {
+    var i: Int = 0;
+    while i < obj.len {
+        if eq(obj.keys[i], key) {
+            return obj.values[i];
+        }
+        i = i + 1;
+    }
+
+    return json.JsonValue{
+        type: json.JsonType.NULLTYPE,
+        stringVal: "",
+        numberVal: 0.0,
+        boolVal: false,
+        objectSource: ""
+    };
+}
+
+fun getStringField(obj: json.JsonObject, key: String) String {
+    var value: json.JsonValue = getField(obj, key);
+    if value.type == json.JsonType.STRING {
+        return value.stringVal;
+    }
+    return "";
+}
+
+fun readProjectConfig() json.JsonObject {
+    var filePath: String = "zap.json";
+    if !fs.exists(filePath) {
+        io.eprintln("missing zap.json in current directory");
+        process.exit(1);
+    }
+
+    if !fs.isFile(filePath) {
+        io.eprintln("zap.json exists but is not a file");
+        process.exit(1);
+    }
+
+    return parseRootObject(fs.readFile(filePath));
+}
+
+fun resolveOutputPath(config: json.JsonObject, outputOverride: String) String {
+    if len(outputOverride) != 0 {
+        return outputOverride;
+    }
+
+    var name: String = getStringField(config, "name");
+    var out: String = getStringField(config, "out");
+
+    if len(name) == 0 {
+        name = "app";
+    }
+
+    if len(out) == 0 {
+        return name;
+    }
+
+    if endsWithSlash(out) {
+        return path.join(out, name);
+    }
+
+    return out;
+}
+
+fun ensureParentDir(filePath: String) Int {
+    var parentDir: String = path.parent(filePath);
+    if eq(parentDir, ".") || len(parentDir) == 0 {
+        return 0;
+    }
+    return fs.mkdirAll(parentDir);
+}
+
+fun buildProject(outputOverride: String) Int {
+    var config: json.JsonObject = readProjectConfig();
+    var entry: String = getStringField(config, "entry");
+    var outputPath: String = resolveOutputPath(config, outputOverride);
+
+    if len(entry) == 0 {
+        io.eprintln("zap.json is missing entry");
+        return 1;
+    }
+
+    if ensureParentDir(outputPath) != 0 {
+        io.eprintln("failed to create output directory for " ~ outputPath);
+        return 1;
+    }
+
+    var cmd: String = "zapc -o " ~ shellQuote(outputPath) ~ " " ~ shellQuote(entry);
+    io.println("build: " ~ cmd);
+    return process.exec(cmd);
+}
+
+fun runProject(outputOverride: String) Int {
+    var config: json.JsonObject = readProjectConfig();
+    var outputPath: String = resolveOutputPath(config, outputOverride);
+    var buildCode: Int = buildProject(outputOverride);
+    var runPath: String = outputPath;
+
+    if buildCode != 0 {
+        return buildCode;
+    }
+
+    if !hasSlash(runPath) {
+        runPath = "./" ~ runPath;
+    }
+
+    var runCmd: String = shellQuote(runPath);
+    io.println("run: " ~ runCmd);
+    return process.exec(runCmd);
+}
+
+fun createProject(projectName: String) Int {
+    var root: String = projectName;
+    var srcDir: String = path.join(root, "src");
+    var zapJsonPath: String = path.join(root, "zap.json");
+    var mainPath: String = path.join(srcDir, "main.zp");
+
+    if fs.exists(root) {
+        io.eprintln("target already exists: " ~ root);
+        return 1;
+    }
+
+    if fs.mkdirAll(srcDir) != 0 {
+        io.eprintln("failed to create project directories");
+        return 1;
+    }
+
+    var templateMainPath: String = path.join("example", "src/main.zp");
+    var mainSource: String = fs.readFile(templateMainPath);
+    var zapJson: String =
+        "{\n" ~
+        "  \"name\": \"" ~ projectName ~ "\",\n" ~
+        "  \"version\": \"0.1.1\",\n" ~
+        "  \"out\": \"build/\",\n" ~
+        "  \"entry\": \"src/main.zp\"\n" ~
+        "}\n";
+
+    if fs.writeFile(zapJsonPath, zapJson) != 0 {
+        io.eprintln("failed to write " ~ zapJsonPath);
+        return 1;
+    }
+
+    if fs.writeFile(mainPath, mainSource) != 0 {
+        io.eprintln("failed to write " ~ mainPath);
+        return 1;
+    }
+
+    io.println("created project: " ~ root);
+    return 0;
+}
+
+fun readOutputOverride() String {
+    if process.argc() >= 4 && eq(process.argv(2), "-o") {
+        return process.argv(3);
+    }
+
+    if process.argc() == 3 && eq(process.argv(2), "-o") {
+        io.eprintln("missing value after -o");
+        process.exit(1);
+    }
+
+    return "";
+}
+
+fun main() Int {
+    if process.argc() < 2 {
+        usage(process.argv(0));
+        return 1;
+    }
+
+    var cmd: String = process.argv(1);
+
+    if eq(cmd, "build") {
+        return buildProject(readOutputOverride());
+    }
+
+    if eq(cmd, "run") {
+        return runProject(readOutputOverride());
+    }
+
+    if eq(cmd, "new") {
+        if process.argc() < 3 {
+            io.eprintln("missing project name");
+            return 1;
+        }
+        return createProject(process.argv(2));
+    }
+
+    usage(process.argv(0));
+    return 1;
+}
