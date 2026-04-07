@@ -47,9 +47,10 @@ zbuild --version
 ```
 
 ## Usage
-
-```bash
+```
+zbuild new <project_name>
 zbuild build
+zbuild run
 ```
 
 ## License
